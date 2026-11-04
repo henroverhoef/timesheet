@@ -398,15 +398,16 @@ const liveEntries = () => Object.values(state.entries).filter((e) => !e.deleted)
 const liveClients = () => Object.values(state.clients).filter((c) => !c.deleted);
 const clientName = (id) => { const c = state.clients[id]; return c && !c.deleted ? c.name : 'Unknown client'; };
 const normName = (s) => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
-/* "John-Mark", "JohnMark" and "john mark" all reduce to the same key, so they count as one client. */
+/* Search is forgiving ("johnmark" finds "John-Mark"), but saved names are exact:
+   "John-Mark" and "John Mark" are different clients. Only capitals and extra spaces are ignored. */
 const fold = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 const nameKey = (s) => fold(s).replace(/[^a-z0-9]+/g, '');
 const nameWords = (s) => fold(s).split(/[^a-z0-9]+/).filter(Boolean);
 const keyCache = new Map();
 const keyOf = (name) => { let k = keyCache.get(name); if (k === undefined) { k = nameKey(name); keyCache.set(name, k); } return k; };
 const findClientByName = (name) => {
-  const k = nameKey(name); if (!k) return null;
-  const all = liveClients().filter((c) => keyOf(c.name) === k);
+  const k = normName(name); if (!k) return null;
+  const all = liveClients().filter((c) => normName(c.name) === k);
   return all.find((c) => !c.archived) || all[0] || null;
 };
 function editDistance(a, b, max) {
@@ -444,6 +445,7 @@ function searchClients(q, limit, includeArchived) {
         if (d <= maxTypos) score = 40 - d * 10;
       }
     }
+    if (score && normName(c.name).startsWith(normName(q))) score += 5;
     if (score) hits.push({ c, score });
   }
   hits.sort((a, b) => b.score - a.score || (a.c.archived ? 1 : 0) - (b.c.archived ? 1 : 0) || a.c.name.length - b.c.name.length || a.c.name.localeCompare(b.c.name));
@@ -476,7 +478,7 @@ function renderAc(inputId, force) {
 function checkClient(inputId, errId) {
   const input = $('#' + inputId);
   const q = input.value.trim().replace(/\s+/g, ' ');
-  if (findClientByName(q) || newClientOk.has(nameKey(q))) return true;
+  if (findClientByName(q) || newClientOk.has(normName(q))) return true;
   renderAc(inputId, true);
   showError(errId, `“${q}” isn't in your client list. Tap the right name above, or add it as a new client.`);
   input.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -511,10 +513,10 @@ function parseClientList(text, isCsv) {
     if (idx >= 0) { col = idx; rows = rows.slice(1); }
   }
   const names = rows.map((r) => String(r[col] || '').replace(/^"|"$/g, '').trim().replace(/\s+/g, ' ').slice(0, 120)).filter(Boolean);
-  const existing = new Map(liveClients().map((c) => [keyOf(c.name), c]));
+  const existing = new Map(liveClients().map((c) => [normName(c.name), c]));
   const seen = new Set(), toAdd = []; let already = 0, repeats = 0;
   for (const n of names) {
-    const k = nameKey(n); if (!k) continue;
+    const k = normName(n); if (!k) continue;
     if (existing.has(k)) { already++; continue; }
     if (seen.has(k)) { repeats++; continue; }
     seen.add(k); toAdd.push(n);
@@ -527,7 +529,7 @@ function renderImportPreview() {
   const r = parseClientList(importState.text, importState.isCsv);
   if (!r.total) { el.innerHTML = 'No names yet.'; btn.disabled = true; btn.textContent = 'Import'; return; }
   const n = (x) => x.toLocaleString('en-ZA');
-  el.innerHTML = `<strong>${plural(r.total, 'name', 'names')} found.</strong> ${n(r.toAdd.length)} new${r.already ? `, ${n(r.already)} already in your list` : ''}${r.repeats ? `, ${n(r.repeats)} repeated in the list` : ''}. Names that only differ by spaces, hyphens or capitals count as the same client.${r.toAdd.length ? `<br>First: ${r.toAdd.slice(0, 4).map(esc).join(' · ')}${r.toAdd.length > 4 ? ' …' : ''}` : ''}`;
+  el.innerHTML = `<strong>${plural(r.total, 'name', 'names')} found.</strong> ${n(r.toAdd.length)} new${r.already ? `, ${n(r.already)} already in your list` : ''}${r.repeats ? `, ${n(r.repeats)} repeated in the list` : ''}. Names are kept exactly as spelt; only differences in capitals count as the same name.${r.toAdd.length ? `<br>First: ${r.toAdd.slice(0, 4).map(esc).join(' · ')}${r.toAdd.length > 4 ? ' …' : ''}` : ''}`;
   btn.disabled = !r.toAdd.length;
   btn.textContent = r.toAdd.length ? `Import ${plural(r.toAdd.length, 'client', 'clients')}` : 'Nothing new to import';
 }
@@ -1246,7 +1248,7 @@ document.addEventListener('click', (ev) => {
     case 'ac-new': {
       const input = $('#' + t.dataset.input); if (!input) break;
       const name = input.value.trim().replace(/\s+/g, ' ');
-      input.value = name; newClientOk.add(nameKey(name));
+      input.value = name; newClientOk.add(normName(name));
       if (t.dataset.input === 'f-client') draft.client = name;
       const box = $('#' + t.dataset.input + '-ac'); if (box) { delete box.dataset.keep; box.hidden = true; box.innerHTML = ''; }
       const err = $(t.dataset.input === 'f-client' ? '#formError' : '#editError'); if (err) err.hidden = true;
