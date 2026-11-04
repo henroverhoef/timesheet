@@ -204,6 +204,17 @@ input[type="date"]::-webkit-date-and-time-value{text-align:left}
 
 /* Clients */
 .find-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+.ac-list{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;box-shadow:0 6px 18px rgba(0,0,0,.08)}
+.ac-list[hidden]{display:none}
+.ac-item{appearance:none;border:0;border-top:1px solid var(--line);background:none;text-align:left;padding:10px 12px;min-height:46px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:1rem}
+.ac-item:first-child{border-top:0}
+.ac-item mark{background:var(--accent-soft);color:inherit;border-radius:3px;padding:0 1px}
+.ac-item small{color:var(--muted);font-size:.8125rem;white-space:nowrap}
+.ac-item.is-new{color:var(--accent);font-weight:600}
+.ac-status{font-size:.8125rem;font-weight:600;color:var(--accent);margin:0}
+.ac-status[hidden]{display:none}
+.import-preview{font-size:.9375rem;color:var(--muted);margin:0}
+.import-preview strong{color:var(--ink)}
 .cl-sub{color:var(--muted);font-size:.875rem}
 
 /* Settings */
@@ -387,7 +398,156 @@ const liveEntries = () => Object.values(state.entries).filter((e) => !e.deleted)
 const liveClients = () => Object.values(state.clients).filter((c) => !c.deleted);
 const clientName = (id) => { const c = state.clients[id]; return c && !c.deleted ? c.name : 'Unknown client'; };
 const normName = (s) => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
-const findClientByName = (name) => { const n = normName(name); return liveClients().find((c) => normName(c.name) === n) || null; };
+/* "John-Mark", "JohnMark" and "john mark" all reduce to the same key, so they count as one client. */
+const fold = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const nameKey = (s) => fold(s).replace(/[^a-z0-9]+/g, '');
+const nameWords = (s) => fold(s).split(/[^a-z0-9]+/).filter(Boolean);
+const keyCache = new Map();
+const keyOf = (name) => { let k = keyCache.get(name); if (k === undefined) { k = nameKey(name); keyCache.set(name, k); } return k; };
+const findClientByName = (name) => {
+  const k = nameKey(name); if (!k) return null;
+  const all = liveClients().filter((c) => keyOf(c.name) === k);
+  return all.find((c) => !c.archived) || all[0] || null;
+};
+function editDistance(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]; let best = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (cur[j] < best) best = cur[j];
+    }
+    if (best > max) return max + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+/* Ranked client search: same key, starts with, every typed word starts a word, contains, then small typos. */
+function searchClients(q, limit, includeArchived) {
+  const k = nameKey(q); if (!k) return [];
+  const qw = nameWords(q);
+  const maxTypos = k.length <= 3 ? 0 : k.length <= 6 ? 1 : 2;
+  const hits = [];
+  for (const c of liveClients()) {
+    if (c.archived && !includeArchived) continue;
+    const ck = keyOf(c.name);
+    let score = 0;
+    if (ck === k) score = 100;
+    else if (ck.startsWith(k)) score = 80;
+    else {
+      const cw = nameWords(c.name);
+      if (qw.length && qw.every((w) => cw.some((x) => x.startsWith(w)))) score = 70;
+      else if (ck.includes(k)) score = 60;
+      else if (maxTypos) {
+        const d = Math.min(editDistance(k, ck, maxTypos), editDistance(k, ck.slice(0, k.length), maxTypos));
+        if (d <= maxTypos) score = 40 - d * 10;
+      }
+    }
+    if (score) hits.push({ c, score });
+  }
+  hits.sort((a, b) => b.score - a.score || (a.c.archived ? 1 : 0) - (b.c.archived ? 1 : 0) || a.c.name.length - b.c.name.length || a.c.name.localeCompare(b.c.name));
+  return hits.slice(0, limit || 8).map((h) => h.c);
+}
+function highlight(name, q) {
+  const t = String(q || '').trim(); const i = t ? name.toLowerCase().indexOf(t.toLowerCase()) : -1;
+  if (i < 0) return esc(name);
+  return esc(name.slice(0, i)) + '<mark>' + esc(name.slice(i, i + t.length)) + '</mark>' + esc(name.slice(i + t.length));
+}
+const newClientOk = new Set();
+/* Suggestion list under a client box. Tapping a name fills it in, spelt exactly as saved. */
+function renderAc(inputId, force) {
+  const input = $('#' + inputId), box = $('#' + inputId + '-ac'), status = $('#' + inputId + '-status');
+  if (!input || !box) return;
+  const q = input.value.trim().replace(/\s+/g, ' ');
+  const match = q ? findClientByName(q) : null;
+  if (status) {
+    status.hidden = !(match && match.name === q);
+    status.textContent = match && match.archived ? '✓ From your client list (archived)' : '✓ From your client list';
+  }
+  if (!q || (match && match.name === q) || (!force && document.activeElement !== input && !box.dataset.keep)) { box.hidden = true; box.innerHTML = ''; return; }
+  const hits = searchClients(q, 6, true);
+  let html = hits.map((c) => `<button type="button" class="ac-item" data-action="ac-pick" data-input="${inputId}" data-id="${esc(c.id)}"><span>${highlight(c.name, q)}</span>${c.archived ? '<small>archived</small>' : ''}</button>`).join('');
+  if (!match) html += `<button type="button" class="ac-item is-new" data-action="ac-new" data-input="${inputId}">+ Add “${esc(q)}” as a new client</button>`;
+  box.innerHTML = html; box.hidden = !html;
+  if (force) box.dataset.keep = '1';
+}
+/* Returns true when the typed client is fine to save; otherwise shows the choices. */
+function checkClient(inputId, errId) {
+  const input = $('#' + inputId);
+  const q = input.value.trim().replace(/\s+/g, ' ');
+  if (findClientByName(q) || newClientOk.has(nameKey(q))) return true;
+  renderAc(inputId, true);
+  showError(errId, `“${q}” isn't in your client list. Tap the right name above, or add it as a new client.`);
+  input.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  return false;
+}
+/* ---- importing a client list */
+function splitDelimited(line, d) {
+  const out = []; let cur = '', q = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (q) { if (ch === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+    else if (ch === '"' && !cur.trim()) q = true;
+    else if (ch === d) { out.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  out.push(cur); return out;
+}
+function parseClientList(text, isCsv) {
+  const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r\n|\n|\r/).filter((l) => l.trim());
+  const sample = lines.slice(0, 30);
+  let delim = null;
+  if (sample.some((l) => l.includes('\t'))) delim = '\t';
+  else if (isCsv) {
+    const semi = sample.filter((l) => l.includes(';')).length, comma = sample.filter((l) => l.includes(',')).length;
+    delim = semi > comma ? ';' : ',';
+  }
+  let rows = lines.map((l) => (delim ? splitDelimited(l, delim) : [l]));
+  let col = 0;
+  if (rows.length) {
+    const head = rows[0].map((h) => fold(h).trim());
+    const idx = head.findIndex((h) => /^(client|client name|clientname|name|customer|customer name|company|company name)$/.test(h));
+    if (idx >= 0) { col = idx; rows = rows.slice(1); }
+  }
+  const names = rows.map((r) => String(r[col] || '').replace(/^"|"$/g, '').trim().replace(/\s+/g, ' ').slice(0, 120)).filter(Boolean);
+  const existing = new Map(liveClients().map((c) => [keyOf(c.name), c]));
+  const seen = new Set(), toAdd = []; let already = 0, repeats = 0;
+  for (const n of names) {
+    const k = nameKey(n); if (!k) continue;
+    if (existing.has(k)) { already++; continue; }
+    if (seen.has(k)) { repeats++; continue; }
+    seen.add(k); toAdd.push(n);
+  }
+  return { total: names.length, toAdd, already, repeats };
+}
+let importState = { text: '', isCsv: false };
+function renderImportPreview() {
+  const el = $('#importPreview'), btn = $('#importGo'); if (!el) return;
+  const r = parseClientList(importState.text, importState.isCsv);
+  if (!r.total) { el.innerHTML = 'No names yet.'; btn.disabled = true; btn.textContent = 'Import'; return; }
+  const n = (x) => x.toLocaleString('en-ZA');
+  el.innerHTML = `<strong>${plural(r.total, 'name', 'names')} found.</strong> ${n(r.toAdd.length)} new${r.already ? `, ${n(r.already)} already in your list` : ''}${r.repeats ? `, ${n(r.repeats)} repeated in the list` : ''}. Names that only differ by spaces, hyphens or capitals count as the same client.${r.toAdd.length ? `<br>First: ${r.toAdd.slice(0, 4).map(esc).join(' · ')}${r.toAdd.length > 4 ? ' …' : ''}` : ''}`;
+  btn.disabled = !r.toAdd.length;
+  btn.textContent = r.toAdd.length ? `Import ${plural(r.toAdd.length, 'client', 'clients')}` : 'Nothing new to import';
+}
+function importSheet() {
+  importState = { text: '', isCsv: false };
+  openSheet(`${sheetHead('Import clients')}
+    <p class="muted">Choose a .txt or .csv file with one client per line, or paste the names below. For a spreadsheet, the first column is used, or a column headed Client or Name.</p>
+    <button type="button" class="btn btn-secondary" data-action="import-file">Choose a file</button>
+    <input type="file" id="importFile" accept=".txt,.csv,text/plain,text/csv" hidden>
+    <div class="field"><label class="label" for="importText">Or paste names, one per line</label><textarea class="input" id="importText" rows="6" placeholder="John-Mark Botha&#10;Mokoena Plumbing (Pty) Ltd&#10;Van der Merwe Family Trust"></textarea></div>
+    <p class="import-preview" id="importPreview" aria-live="polite">No names yet.</p>
+    <button type="button" class="btn btn-primary" id="importGo" data-action="import-go" disabled>Import</button>`);
+}
+function doImport() {
+  const r = parseClientList(importState.text, importState.isCsv);
+  const t = now();
+  r.toAdd.forEach((name, i) => { const c = { id: newId() + i.toString(36), name, updatedAt: t }; state.clients[c.id] = c; });
+  commit(); closeSheet(); ui.clientFilter = ''; render();
+  toast(r.toAdd.length ? `Imported ${plural(r.toAdd.length, 'client', 'clients')}` : 'Nothing new to import');
+}
 function ensureClient(name) {
   let c = findClientByName(name);
   if (c) { if (c.archived) { delete c.archived; c.updatedAt = now(); } return c; }
@@ -423,7 +583,7 @@ function recentClients(limit) {
     seen.add(c.id); out.push(c);
     if (out.length >= limit) break;
   }
-  if (out.length < limit) {
+  if (out.length < limit && liveClients().length <= 12) {
     for (const c of liveClients().filter((c) => !c.archived).sort((a, b) => a.name.localeCompare(b.name))) {
       if (!seen.has(c.id)) { out.push(c); seen.add(c.id); if (out.length >= limit) break; }
     }
@@ -544,7 +704,9 @@ function renderLog() {
       </div>
       <div class="field">
         <label class="label" for="f-client">Client</label>
-        <input class="input" id="f-client" list="clientNames" autocomplete="off" autocapitalize="words" placeholder="Client name" value="${esc(draft.client)}">
+        <input class="input" id="f-client" type="search" enterkeyhint="done" autocomplete="off" autocorrect="off" spellcheck="false" autocapitalize="words" placeholder="Start typing a client name" value="${esc(draft.client)}" aria-controls="f-client-ac">
+        <p class="ac-status" id="f-client-status" hidden></p>
+        <div class="ac-list" id="f-client-ac" role="listbox" aria-label="Matching clients" hidden></div>
         <div class="chips chips-scroll" id="clientChips" aria-label="Recent clients"></div>
       </div>
       <div class="field">
@@ -570,7 +732,7 @@ function renderLog() {
       <button class="btn btn-primary btn-block" type="submit">Save entry</button>
     </form>
     <section id="dayList" class="stack"></section>`;
-  renderTimer(); renderClientChips(); renderDayList(); updateDec();
+  renderTimer(); renderClientChips(); renderDayList(); updateDec(); renderAc('f-client');
 }
 function renderTimer() {
   const el = $('#timerCard'); if (!el) return;
@@ -713,6 +875,7 @@ function renderClients() {
       <input class="input" type="search" id="clientFilter" placeholder="Find a client" aria-label="Find a client" autocomplete="off" value="${esc(ui.clientFilter)}">
       <button type="button" class="btn btn-primary" data-action="add-client">Add</button>
     </div>
+    <button type="button" class="link" data-action="import-clients" style="align-self:flex-start">Import a client list (.txt or .csv)</button>
     <div id="clientListBox" class="stack"></div>`;
   renderClientList();
 }
@@ -726,15 +889,16 @@ function renderClientList() {
     if (e.date >= m.from && e.date <= m.to) s.month += e.minutes;
     if (e.date > s.last) s.last = e.date;
   }
-  const f = normName(ui.clientFilter);
-  const all = liveClients().filter((c) => !f || normName(c.name).includes(f)).sort((a, b) => a.name.localeCompare(b.name));
+  const f = ui.clientFilter.trim();
+  const all = f ? searchClients(f, 200, true) : liveClients().sort((a, b) => a.name.localeCompare(b.name));
+  const LIMIT = 150;
   const active = all.filter((c) => !c.archived), archived = all.filter((c) => c.archived);
   const row = (c) => { const s = stats[c.id] || { total: 0, month: 0, last: '' }; return `<button type="button" class="entry" data-action="open-client" data-client="${esc(c.id)}"><span class="e-main"><span class="e-client">${esc(c.name)}</span><span class="cl-sub">This month <span class="num">${fmtDur(s.month)}</span>${s.last ? ` · last worked ${esc(fmtDayShort(s.last))}` : ' · no entries yet'}</span></span><span class="e-time num">${fmtDur(s.total)}</span></button>`; };
   let html = '';
   if (!liveClients().length) html = `<div class="card empty"><p><strong>No clients yet.</strong></p><p>Clients are added when you log time for a new name, or with the Add button.</p></div>`;
   else if (!all.length) html = `<div class="card empty"><p>No clients match "${esc(ui.clientFilter)}".</p></div>`;
   else {
-    if (active.length) html += `<div class="list-head"><h2 class="section-h">${plural(active.length, 'client', 'clients')}</h2><span class="section-h">All time</span></div><div class="card list">${active.map(row).join('')}</div>`;
+    if (active.length) html += `<div class="list-head"><h2 class="section-h">${f ? 'Matches' : plural(active.length, 'client', 'clients')}</h2><span class="section-h">All time</span></div><div class="card list">${active.slice(0, LIMIT).map(row).join('')}</div>${active.length > LIMIT ? `<p class="muted" style="margin:0;font-size:.875rem">Showing the first ${LIMIT}. Type in the search box to find the others.</p>` : ''}`;
     if (archived.length) html += `<button type="button" class="link" data-action="toggle-show-archived">${ui.showArchived ? 'Hide' : 'Show'} archived (${archived.length})</button>${ui.showArchived ? `<div class="card list">${archived.map(row).join('')}</div>` : ''}`;
   }
   box.innerHTML = html;
@@ -828,7 +992,7 @@ function editSheet(entry) {
   openSheet(`${sheetHead(isNew ? 'New entry' : 'Edit entry')}
     <form class="form" id="editForm" novalidate>
       <div class="field"><label class="label" for="e-date">Date</label><input class="input" type="date" id="e-date" value="${esc(e.date)}"></div>
-      <div class="field"><label class="label" for="e-client">Client</label><input class="input" id="e-client" list="clientNames" autocomplete="off" autocapitalize="words" value="${esc(e.clientId ? clientName(e.clientId) : '')}"></div>
+      <div class="field"><label class="label" for="e-client">Client</label><input class="input" id="e-client" type="search" enterkeyhint="done" autocomplete="off" autocorrect="off" spellcheck="false" autocapitalize="words" value="${esc(e.clientId ? clientName(e.clientId) : '')}" aria-controls="e-client-ac"><p class="ac-status" id="e-client-status" hidden></p><div class="ac-list" id="e-client-ac" role="listbox" aria-label="Matching clients" hidden></div></div>
       <div class="field"><span class="label" id="e-durLabel">Time spent</span><div class="dur" role="group" aria-labelledby="e-durLabel"><input class="input" id="e-h" inputmode="decimal" aria-label="Hours" value="${e.minutes ? h : ''}" placeholder="0"><span class="unit">h</span><input class="input" id="e-m" inputmode="numeric" pattern="[0-9]*" aria-label="Minutes" value="${e.minutes ? m : ''}" placeholder="0"><span class="unit">min</span></div></div>
       <div class="field"><label class="label" for="e-desc">Task performed</label><textarea class="input" id="e-desc" rows="3">${esc(e.desc)}</textarea></div>
       <p class="form-error" id="editError" role="alert" hidden></p>
@@ -962,6 +1126,7 @@ function submitLog() {
   if (!minutes) return showError('formError', 'Enter the time spent.', 'f-h');
   if (minutes > 1440) return showError('formError', "One entry can't be more than 24 hours.", 'f-h');
   if (!draft.desc.trim()) return showError('formError', 'Describe the task you performed.', 'f-desc');
+  if (!checkClient('f-client', 'formError')) return;
   const e = saveEntry({ date: draft.date, clientName: draft.client, minutes, desc: draft.desc });
   draft = { date: draft.date, client: '', h: '', m: '', desc: '' };
   if (document.activeElement) document.activeElement.blur();
@@ -976,6 +1141,7 @@ function submitEdit() {
   if (!minutes) return showError('editError', 'Enter the time spent.', 'e-h');
   if (minutes > 1440) return showError('editError', "One entry can't be more than 24 hours.", 'e-h');
   if (!desc.trim()) return showError('editError', 'Describe the task you performed.', 'e-desc');
+  if (!checkClient('e-client', 'editError')) return;
   saveEntry({ id: sheetCtx && sheetCtx.entryId, date, clientName: name, minutes, desc });
   closeSheet(); render({ keepForm: true }); toast('Entry saved');
 }
@@ -1049,7 +1215,7 @@ document.addEventListener('click', (ev) => {
       const c = state.clients[ui.detail.clientId]; if (!c) break;
       nameSheet('Rename client', c.name, (name) => {
         const other = findClientByName(name);
-        if (other && other.id !== c.id) return 'Another client already has that name.';
+        if (other && other.id !== c.id) return `Already in your list as “${other.name}”.`;
         state.clients[c.id] = Object.assign({}, c, { name, updatedAt: now() }); commit(); toast('Client renamed'); return null;
       });
       break;
@@ -1064,10 +1230,32 @@ document.addEventListener('click', (ev) => {
     }
     case 'add-client':
       nameSheet('Add client', ui.clientFilter, (name) => {
-        if (findClientByName(name)) return 'You already have a client with that name.';
+        { const ex = findClientByName(name); if (ex) return `Already in your list as “${ex.name}”.`; }
         ensureClient(name); commit(); toast('Client added'); return null;
       });
       break;
+    case 'ac-pick': {
+      const c = state.clients[t.dataset.id]; const input = $('#' + t.dataset.input); if (!c || !input) break;
+      input.value = c.name;
+      if (t.dataset.input === 'f-client') { draft.client = c.name; renderClientChips(); const err = $('#formError'); if (err) err.hidden = true; }
+      else { const err = $('#editError'); if (err) err.hidden = true; }
+      const box = $('#' + t.dataset.input + '-ac'); if (box) delete box.dataset.keep;
+      renderAc(t.dataset.input);
+      break;
+    }
+    case 'ac-new': {
+      const input = $('#' + t.dataset.input); if (!input) break;
+      const name = input.value.trim().replace(/\s+/g, ' ');
+      input.value = name; newClientOk.add(nameKey(name));
+      if (t.dataset.input === 'f-client') draft.client = name;
+      const box = $('#' + t.dataset.input + '-ac'); if (box) { delete box.dataset.keep; box.hidden = true; box.innerHTML = ''; }
+      const err = $(t.dataset.input === 'f-client' ? '#formError' : '#editError'); if (err) err.hidden = true;
+      toast(`“${name}” will be added when you save`);
+      break;
+    }
+    case 'import-clients': importSheet(); break;
+    case 'import-file': { const f = $('#importFile'); if (f) { f.value = ''; f.click(); } break; }
+    case 'import-go': doImport(); break;
     case 'toggle-show-archived': ui.showArchived = !ui.showArchived; renderClientList(); break;
 
     case 'set-round': state.settings.round = Number(t.dataset.val); saveLocal(); renderSettings(); break;
@@ -1113,15 +1301,25 @@ document.addEventListener('input', (ev) => {
   if (DRAFT_FIELDS[id]) {
     draft[DRAFT_FIELDS[id]] = ev.target.value;
     if (id === 'f-h' || id === 'f-m') updateDec();
-    if (id === 'f-client') renderClientChips();
+    if (id === 'f-client') { renderClientChips(); renderAc('f-client'); }
     if (id === 'f-date' && isDateStr(ev.target.value)) renderDayList();
     const err = $('#formError'); if (err && !err.hidden) err.hidden = true;
   } else if (id === 'clientFilter') { ui.clientFilter = ev.target.value; renderClientList(); }
+  else if (id === 'e-client') { renderAc('e-client'); const err = $('#editError'); if (err) err.hidden = true; }
+  else if (id === 'importText') { importState.text = ev.target.value; renderImportPreview(); }
 });
 document.addEventListener('change', (ev) => {
   const id = ev.target.id;
   if (id === 'f-date' && isDateStr(ev.target.value)) { draft.date = ev.target.value; renderDayList(); }
   else if (id === 'f-m' || id === 'f-h') { const m = parseDur(draft.h, draft.m); if (m && (parseInt(draft.m, 10) >= 60 || /[.,]/.test(draft.h))) setDur(m); }
+  else if (id === 'importFile') {
+    const f = ev.target.files && ev.target.files[0]; if (!f) return;
+    f.text().then((txt) => {
+      importState = { text: txt, isCsv: /\.csv$/i.test(f.name) || /csv/.test(f.type) };
+      const ta = $('#importText'); if (ta) ta.value = txt.length > 200000 ? txt.slice(0, 200000) : txt;
+      renderImportPreview();
+    }).catch(() => toast("Couldn't read that file."));
+  }
   else if (id === 'restoreFile') {
     const f = ev.target.files && ev.target.files[0]; if (!f) return;
     f.text().then((txt) => restoreFrom(txt)).catch(() => toast("Couldn't read that file."));
@@ -1149,6 +1347,8 @@ function restoreFrom(txt) {
   commit(); render(); toast(added ? `Restored ${plural(added, 'entry', 'entries')}` : 'Everything in that file is already here');
 }
 
+document.addEventListener('pointerdown', (ev) => { if (ev.target.closest('.ac-item')) ev.preventDefault(); });
+document.addEventListener('focusin', (ev) => { if (ev.target.id === 'f-client' || ev.target.id === 'e-client') renderAc(ev.target.id); });
 document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && !$('#sheetWrap').hidden) closeSheet(); });
 
 /* Timer tick and day rollover */
