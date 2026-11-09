@@ -66,7 +66,7 @@ h1,h2,h3{text-wrap:balance;margin:0}
 .muted{color:var(--muted)}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
-.app{height:100%;display:flex;flex-direction:column;max-width:640px;margin:0 auto;background:var(--paper)}
+.app{height:100%;display:flex;flex-direction:column;max-width:780px;margin:0 auto;background:var(--paper)}
 .top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:calc(env(safe-area-inset-top) + 12px) calc(env(safe-area-inset-right) + 16px) 10px calc(env(safe-area-inset-left) + 16px);border-bottom:1px solid var(--line)}
 .top h1{font-family:var(--font-display);font-weight:600;font-size:1.5rem;letter-spacing:-.01em;line-height:1.2}
 .sync{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--surface);color:var(--muted);border-radius:999px;padding:5px 10px;font-size:.75rem;font-weight:500;cursor:pointer;white-space:nowrap}
@@ -234,6 +234,21 @@ input[type="date"]::-webkit-date-and-time-value{text-align:left}
 .task-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:.9375rem;overflow-wrap:anywhere}
 .task-row:first-child{border-top:0}
 .task-row .icon-btn{width:40px;min-height:40px}
+.view > *{flex-shrink:0}
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius)}
+.ts-table{border-collapse:collapse;width:100%;min-width:720px;font-size:.875rem}
+.ts-table th{background:var(--paper);color:var(--muted);font-size:.75rem;font-weight:600;letter-spacing:.03em;text-transform:uppercase;text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+.ts-table td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
+.ts-table tbody tr{cursor:pointer}
+.ts-table tbody tr:hover,.ts-table tbody tr:active{background:var(--accent-soft)}
+.ts-table .r{text-align:right;white-space:nowrap}
+.ts-table .nw{white-space:nowrap}
+.ts-table .cl{min-width:150px;font-weight:600}
+.ts-table .tk{min-width:220px}
+.ts-table .fuc{min-width:150px}
+.ts-table .fuc .fu{margin-top:0}
+.ts-table tfoot td{font-weight:700;border-bottom:0;background:var(--paper)}
+.share-link{align-self:center}
 .import-preview strong{color:var(--ink)}
 .cl-sub{color:var(--muted);font-size:.875rem}
 
@@ -366,7 +381,7 @@ const UI_KEY = 'client-timesheet.ui';
 const state = { entries: {}, clients: {}, tasks: {}, settings: { round: 6, lastFileBackup: 0 }, timer: null };
 const monthAgo = addDays(addMonths(todayStr(), -1), 1);
 const ui = { tab: 'log', sumMode: 'week', sumAnchor: todayStr(), detail: null, clientFilter: '', showArchived: false,
-  customFrom: monthAgo, customTo: todayStr(), expFrom: monthAgo, expTo: todayStr() };
+  customFrom: monthAgo, customTo: todayStr(), expFrom: monthAgo, expTo: todayStr(), sumView: 'table' };
 let draft = { date: todayStr(), client: '', h: '', m: '', desc: '', follow: '' };
 let storageOk = true;
 let lastToday = todayStr();
@@ -416,6 +431,7 @@ function loadLocal() {
     const u = JSON.parse(localStorage.getItem(UI_KEY) || 'null');
     if (u && ['log', 'summary', 'clients', 'settings'].includes(u.tab)) ui.tab = u.tab;
     if (u && ['day', 'week', 'month', 'custom'].includes(u.sumMode)) ui.sumMode = u.sumMode;
+    if (u && ['table', 'clients'].includes(u.sumView)) ui.sumView = u.sumView;
     if (u) for (const k of ['customFrom', 'customTo', 'expFrom', 'expTo']) if (isDateStr(u[k])) ui[k] = u[k];
   } catch (e) { storageOk = false; }
 }
@@ -427,7 +443,7 @@ function saveLocal() {
   } catch (e) { storageOk = false; }
   renderSyncPill();
 }
-function saveUi() { try { localStorage.setItem(UI_KEY, JSON.stringify({ tab: ui.tab, sumMode: ui.sumMode, customFrom: ui.customFrom, customTo: ui.customTo, expFrom: ui.expFrom, expTo: ui.expTo })); } catch (e) { /* not important */ } }
+function saveUi() { try { localStorage.setItem(UI_KEY, JSON.stringify({ tab: ui.tab, sumMode: ui.sumMode, customFrom: ui.customFrom, customTo: ui.customTo, expFrom: ui.expFrom, expTo: ui.expTo, sumView: ui.sumView })); } catch (e) { /* not important */ } }
 
 const liveEntries = () => Object.values(state.entries).filter((e) => !e.deleted);
 const liveClients = () => Object.values(state.clients).filter((c) => !c.deleted);
@@ -532,9 +548,23 @@ function splitDelimited(line, d) {
   }
   out.push(cur); return out;
 }
+function parseCsv(text, d) {
+  const rows = []; let row = [], cur = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) { if (ch === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; continue; }
+    if (ch === '"' && !cur.trim()) { q = true; cur = ''; continue; }
+    if (ch === d) { row.push(cur); cur = ''; continue; }
+    if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cur); rows.push(row); row = []; cur = ''; continue; }
+    cur += ch;
+  }
+  if (cur || row.length) { row.push(cur); rows.push(row); }
+  return rows.filter((r) => r.some((c) => c.trim()));
+}
 function parseList(text, isCsv, kind) {
   const isTasks = kind === 'tasks';
-  const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r\n|\n|\r/).filter((l) => l.trim());
+  text = String(text || '').replace(/^(﻿|ï»¿)+/, '');
+  const lines = text.split(/\r\n|\n|\r/).filter((l) => l.trim());
   const sample = lines.slice(0, 30);
   let delim = null;
   if (sample.some((l) => l.includes('\t'))) delim = '\t';
@@ -542,15 +572,17 @@ function parseList(text, isCsv, kind) {
     const semi = sample.filter((l) => l.includes(';')).length, comma = sample.filter((l) => l.includes(',')).length;
     delim = semi > comma ? ';' : ',';
   }
-  let rows = lines.map((l) => (delim ? splitDelimited(l, delim) : [l]));
-  let col = 0;
+  let rows = delim ? parseCsv(text, delim) : lines.map((l) => [l.trim().replace(/^"([\s\S]*)"$/, '$1').replace(/""/g, '"')]);
+  let col = 0, header = false;
   if (rows.length) {
     const head = rows[0].map((h) => fold(h).trim());
-    const re = isTasks ? /^(task|tasks|task name|task description|description|name|service|activity)$/ : /^(client|client name|clientname|name|customer|customer name|company|company name)$/;
+    const re = isTasks ? /^(task|tasks|task name|task description|task performed|description|name|service|activity)$/ : /^(client|client name|clientname|name|customer|customer name|company|company name)$/;
     const idx = head.findIndex((h) => re.test(h));
-    if (idx >= 0) { col = idx; rows = rows.slice(1); }
+    if (idx >= 0) { col = idx; header = true; rows = rows.slice(1); }
   }
-  const names = rows.map((r) => String(r[col] || '').replace(/^"|"$/g, '').trim().replace(/\s+/g, ' ').slice(0, isTasks ? 300 : 120)).filter(Boolean);
+  /* A task line with commas in it stays one task, even when the file split it into columns. */
+  const pick = (r) => (isTasks && !header ? r.map((c) => c.trim()).filter(Boolean).join(', ') : String(r[col] || ''));
+  const names = rows.map((r) => pick(r).trim().replace(/\s+/g, ' ').slice(0, isTasks ? 300 : 120)).filter(Boolean);
   const existing = new Map((isTasks ? liveTasks() : liveClients()).map((c) => [normName(c.name), c]));
   const seen = new Set(), toAdd = []; let already = 0, repeats = 0;
   for (const n of names) {
@@ -559,28 +591,39 @@ function parseList(text, isCsv, kind) {
     if (seen.has(k)) { repeats++; continue; }
     seen.add(k); toAdd.push(n);
   }
-  return { total: names.length, toAdd, already, repeats };
+  /* Tasks that were imported as clients by mistake: same name, no time logged against them. */
+  let clash = [];
+  if (isTasks) {
+    const used = new Set(liveEntries().map((e) => e.clientId));
+    const keys = new Set(names.map(normName));
+    clash = liveClients().filter((c) => keys.has(normName(c.name)) && !used.has(c.id));
+  }
+  return { total: names.length, toAdd, already, repeats, clash };
 }
-let importState = { text: '', isCsv: false, kind: 'clients' };
+let importState = { text: '', isCsv: false, kind: 'clients', removeClash: true };
 function renderImportPreview() {
-  const el = $('#importPreview'), btn = $('#importGo'); if (!el) return;
+  const el = $('#importPreview'), btn = $('#importGo'), cl = $('#importClash'); if (!el) return;
   const tasks = importState.kind === 'tasks';
   const r = parseList(importState.text, importState.isCsv, importState.kind);
+  if (cl) cl.innerHTML = tasks && r.clash.length ? `<label class="check-row"><input type="checkbox" id="importRemoveClients" ${importState.removeClash ? 'checked' : ''}> Also remove ${plural(r.clash.length, 'matching name', 'matching names')} from your client list. No time is logged against ${r.clash.length === 1 ? 'it' : 'them'}.</label>` : '';
+  const removing = tasks && importState.removeClash ? r.clash.length : 0;
   if (!r.total) { el.innerHTML = tasks ? 'No tasks yet.' : 'No names yet.'; btn.disabled = true; btn.textContent = 'Import'; return; }
   const n = (x) => x.toLocaleString('en-ZA');
   el.innerHTML = `<strong>${plural(r.total, tasks ? 'task' : 'name', tasks ? 'tasks' : 'names')} found.</strong> ${n(r.toAdd.length)} new${r.already ? `, ${n(r.already)} already in your list` : ''}${r.repeats ? `, ${n(r.repeats)} repeated in the list` : ''}. ${tasks ? 'Tasks' : 'Names'} are kept exactly as spelt; only differences in capitals count as the same.${r.toAdd.length ? `<br>First: ${r.toAdd.slice(0, 3).map(esc).join(' · ')}${r.toAdd.length > 3 ? ' …' : ''}` : ''}`;
-  btn.disabled = !r.toAdd.length;
-  btn.textContent = r.toAdd.length ? `Import ${plural(r.toAdd.length, tasks ? 'task' : 'client', tasks ? 'tasks' : 'clients')}` : 'Nothing new to import';
+  btn.disabled = !r.toAdd.length && !removing;
+  btn.textContent = r.toAdd.length ? `Import ${plural(r.toAdd.length, tasks ? 'task' : 'client', tasks ? 'tasks' : 'clients')}` : removing ? `Remove ${plural(removing, 'name', 'names')} from clients` : 'Nothing new to import';
 }
 function importSheet(kind) {
   const tasks = kind === 'tasks';
-  importState = { text: '', isCsv: false, kind };
+  importState = { text: '', isCsv: false, kind, removeClash: true };
   openSheet(`${sheetHead(tasks ? 'Import tasks' : 'Import clients')}
-    <p class="muted">Choose a .txt or .csv file with one ${tasks ? 'task' : 'client'} per line, or paste them below. For a spreadsheet, the first column is used, or a column headed ${tasks ? 'Task or Description' : 'Client or Name'}.</p>
+    <p class="muted">${tasks ? 'These become your list for <strong>Task performed</strong>, separate from your clients.' : 'These become your <strong>client</strong> list.'} Choose a .txt or .csv file with one ${tasks ? 'task' : 'client'} per line, or paste them below. For a spreadsheet, the first column is used, or a column headed ${tasks ? 'Task or Description' : 'Client or Name'}.</p>
+    ${tasks ? '' : '<button type="button" class="link" data-action="import-tasks" style="align-self:flex-start">Importing tasks rather than clients? Use the task list instead</button>'}
     <button type="button" class="btn btn-secondary" data-action="import-file">Choose a file</button>
     <input type="file" id="importFile" accept=".txt,.csv,text/plain,text/csv" hidden>
-    <div class="field"><label class="label" for="importText">Or paste ${tasks ? 'tasks' : 'names'}, one per line</label><textarea class="input" id="importText" rows="6" placeholder="${tasks ? 'Prepare and submit VAT201 return on eFiling&#10;Monthly bank reconciliation and journal review&#10;Annual financial statements: draft for review' : 'John-Mark Botha&#10;Mokoena Plumbing (Pty) Ltd&#10;Van der Merwe Family Trust'}"></textarea></div>
+    <div class="field"><label class="label" for="importText">Or paste ${tasks ? 'tasks' : 'names'}, one per line</label><textarea class="input" id="importText" rows="6" placeholder="${tasks ? 'Draft financial statements.&#10;Tax computation.&#10;Respond to client query.' : 'John-Mark Botha&#10;Mokoena Plumbing (Pty) Ltd&#10;Van der Merwe Family Trust'}"></textarea></div>
     <p class="import-preview" id="importPreview" aria-live="polite">${tasks ? 'No tasks yet.' : 'No names yet.'}</p>
+    <div id="importClash"></div>
     <button type="button" class="btn btn-primary" id="importGo" data-action="import-go" disabled>Import</button>`);
 }
 function doImport() {
@@ -589,11 +632,16 @@ function doImport() {
   const t = now();
   const target = kind === 'tasks' ? state.tasks : state.clients;
   r.toAdd.forEach((name, i) => { const c = { id: newId() + i.toString(36), name, updatedAt: t }; target[c.id] = c; });
+  let removed = 0;
+  if (kind === 'tasks' && importState.removeClash) for (const c of r.clash) { state.clients[c.id] = Object.assign({}, c, { deleted: true, updatedAt: t }); removed++; }
   commit();
   const word = kind === 'tasks' ? ['task', 'tasks'] : ['client', 'clients'];
   if (kind === 'tasks') tasksSheet(); else { closeSheet(); ui.clientFilter = ''; }
   render({ keepForm: true });
-  toast(r.toAdd.length ? `Imported ${plural(r.toAdd.length, word[0], word[1])}` : 'Nothing new to import');
+  const parts = [];
+  if (r.toAdd.length) parts.push(`Imported ${plural(r.toAdd.length, word[0], word[1])}`);
+  if (removed) parts.push(`removed ${removed} from clients`);
+  toast(parts.length ? parts.join(' · ') : 'Nothing new to import');
 }
 
 /* ---- task list: pick standard tasks instead of typing them */
@@ -605,7 +653,7 @@ function searchTasks(q) {
 }
 function taskPickerHtml(target) {
   const n = liveTasks().length;
-  if (!n) return '';
+  if (!n) return target === 'f-desc' ? '<button type="button" class="link" data-action="import-tasks" style="align-self:flex-start">Import your task list to pick from</button>' : '';
   return `<div class="task-pick"><input class="input" type="search" id="${target}-tq" enterkeyhint="search" autocomplete="off" placeholder="Search your ${plural(n, 'task', 'tasks')}" aria-label="Search your task list"><button type="button" class="btn btn-secondary btn-sm" data-action="task-browse" data-target="${target}" aria-label="Show all tasks">All ▾</button></div>
     <div class="ac-list task-list" id="${target}-tl" role="listbox" aria-label="Task list" hidden></div>`;
 }
@@ -942,9 +990,19 @@ function renderSummary() {
       ${mode !== 'day' && days > 1 && days <= 62 ? barsHtml(mode, r, list) : ''}
     </section>
     ${fuOpen ? `<button type="button" class="fu-banner" data-action="fu-open-list"><span>↻ ${plural(fuOpen, 'open follow-up', 'open follow-ups')}</span><span>View ›</span></button>` : ''}
-    ${s.groups.length ? `<h2 class="section-h">By client</h2><div class="stack">${groups}</div>
-      <div class="btn-row"><button type="button" class="btn btn-secondary" data-action="copy-summary">Copy summary</button><button type="button" class="btn btn-secondary" data-action="export-period">Export CSV</button></div>`
+    ${s.groups.length ? `<div class="seg" style="--n:2" aria-label="Show entries as">${[['table', 'Table'], ['clients', 'By client']].map(([v, l]) => `<button type="button" aria-pressed="${ui.sumView === v}" data-action="sum-view" data-view="${v}">${l}</button>`).join('')}</div>
+      ${ui.sumView === 'clients' ? `<div class="stack">${groups}</div>` : tableHtml(list)}
+      <div class="btn-row"><button type="button" class="btn btn-secondary" data-action="copy-summary">Copy summary</button><button type="button" class="btn btn-primary" data-action="export-period">Download Excel</button></div>${shareLinkHtml('export-period')}`
       : `<div class="card empty"><p><strong>No time logged ${emptyWhen}.</strong></p><p>Entries you save on the Log tab show up here, grouped by client.</p>${noneAtAll ? '<button class="btn btn-secondary btn-sm" type="button" data-action="load-samples">Try it with sample entries</button>' : ''}</div>`}`;
+}
+const fmtNumDate = (d) => fmt(d, { day: '2-digit', month: '2-digit', year: 'numeric' });
+function tableHtml(list) {
+  const rows = list.slice().sort((a, b) => byDate(a, b) || clientName(a.clientId).localeCompare(clientName(b.clientId)));
+  const total = rows.reduce((a, e) => a + e.minutes, 0);
+  return `<div class="table-wrap"><table class="ts-table"><thead><tr><th>Date</th><th>Client</th><th class="r">Hours</th><th class="r">Duration</th><th>Task performed</th><th>Follow-up</th></tr></thead>
+    <tbody>${rows.map((e) => `<tr data-action="edit-entry" data-id="${esc(e.id)}"><td class="nw num">${esc(fmtNumDate(e.date))}</td><td class="cl">${esc(clientName(e.clientId))}</td><td class="r num">${fmtDec(e.minutes)}</td><td class="r num">${fmtDur(e.minutes)}</td><td class="tk">${esc(e.desc)}</td><td class="fuc">${fuHtml(e)}</td></tr>`).join('')}</tbody>
+    <tfoot><tr><td colspan="2">Total · ${plural(rows.length, 'entry', 'entries')}</td><td class="r num">${fmtDec(total)}</td><td class="r num">${fmtDur(total)}</td><td colspan="2"></td></tr></tfoot></table></div>
+    <p class="muted" style="font-size:.8125rem;margin:0">Swipe the table sideways to see every column. Tap a row to edit it.</p>`;
 }
 function barsHtml(mode, r, list) {
   const days = [];
@@ -993,8 +1051,9 @@ function renderDetail() {
     ${body}
     <div class="btn-col">
       <button type="button" class="btn btn-primary" data-action="log-for-client">Log time for this client</button>
-      ${list.length ? '<div class="btn-row"><button type="button" class="btn btn-secondary" data-action="copy-detail">Copy as text</button><button type="button" class="btn btn-secondary" data-action="export-detail">Export CSV</button></div>' : ''}
+      ${list.length ? `<div class="btn-row"><button type="button" class="btn btn-secondary" data-action="copy-detail">Copy as text</button><button type="button" class="btn btn-secondary" data-action="export-detail">Download Excel</button></div>${shareLinkHtml('export-detail')}` : ''}
       ${c && !c.deleted ? `<div class="btn-row"><button type="button" class="btn btn-ghost" data-action="rename-client">Rename client</button><button type="button" class="btn btn-ghost" data-action="toggle-archive">${c.archived ? 'Unarchive' : 'Archive client'}</button></div>` : ''}
+      ${c && !c.deleted && !liveEntries().some((e) => e.clientId === c.id) ? '<button type="button" class="btn btn-danger-text" data-action="delete-client">Delete client (no time logged)</button>' : ''}
     </div>`;
 }
 function dateGroupsHtml(list) {
@@ -1012,6 +1071,7 @@ function renderClients() {
       <button type="button" class="btn btn-primary" data-action="add-client">Add</button>
     </div>
     <button type="button" class="link" data-action="import-clients" style="align-self:flex-start">Import a client list (.txt or .csv)</button>
+    <button type="button" class="link" data-action="manage-tasks" style="align-self:flex-start">Task list for “Task performed” (${liveTasks().length})</button>
     <div id="clientListBox" class="stack"></div>`;
   renderClientList();
 }
@@ -1052,14 +1112,15 @@ function renderSettings() {
     </section>
     <section class="card set-card">
       <h2>Export entries</h2>
-      <p>A spreadsheet with date, client, hours, duration, task and follow-up.</p>
+      <p>An Excel file with date, client, hours, duration, task and follow-up, with a total at the bottom.</p>
       <div class="range-row">
         <div class="field"><label class="label" for="exp-from">From</label><input class="input" type="date" id="exp-from" value="${esc(ui.expFrom)}"></div>
         <div class="field"><label class="label" for="exp-to">To</label><input class="input" type="date" id="exp-to" value="${esc(ui.expTo)}"></div>
       </div>
       <p id="expCount" style="font-size:.875rem"></p>
-      <button type="button" class="btn btn-primary" data-action="export-range">Export these dates (.csv)</button>
-      <button type="button" class="btn btn-secondary" data-action="export-all">Export everything (.csv)</button>
+      <button type="button" class="btn btn-primary" data-action="export-range">Download Excel for these dates</button>
+      ${shareLinkHtml('export-range')}
+      <button type="button" class="btn btn-secondary" data-action="export-all">Download Excel with everything</button>
     </section>
     <section class="card set-card" id="installCard">${installCardHtml()}</section>
     <section class="card set-card">
@@ -1184,8 +1245,8 @@ function csvFor(list) {
   for (const e of list.slice().sort((a, b) => byDate(a, b) || clientName(a.clientId).localeCompare(clientName(b.clientId)))) rows.push([e.date, clientName(e.clientId), fmtDec(e.minutes), fmtDur(e.minutes), e.desc, e.followUp || '', e.followUp ? (e.followDone ? 'Done' : 'Open') : '']);
   return rows.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
 }
-async function offerFile(filename, text, mime, preferShare) {
-  const blob = new Blob([(filename.endsWith('.csv') ? '\uFEFF' : '') + text], { type: mime });
+async function offerFile(filename, data, mime, preferShare) {
+  const blob = new Blob([data], { type: mime });
   if (preferShare) {
     try {
       const file = new File([blob], filename, { type: mime });
@@ -1201,9 +1262,84 @@ async function offerFile(filename, text, mime, preferShare) {
     toast(`Downloaded ${filename}`);
     return true;
   } catch (e) {
-    textSheet('Copy this text', text, "This browser couldn't save the file, so copy the text instead.");
+    if (typeof data === 'string') textSheet('Copy this text', data, "This browser couldn't save the file, so copy the text instead.");
+    else toast("This browser couldn't save the file.");
     return false;
   }
+}
+
+/* ---- Excel (.xlsx) writer: a small uncompressed zip with one formatted sheet. */
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(b) { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC_TABLE[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function zipStore(files) {
+  const enc = new TextEncoder(), parts = [], central = [];
+  const d = new Date();
+  const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+  const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name), data = enc.encode(f.data), crc = crc32(data);
+    const h = new DataView(new ArrayBuffer(30));
+    h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint16(8, 0, true);
+    h.setUint16(10, time, true); h.setUint16(12, date, true); h.setUint32(14, crc, true);
+    h.setUint32(18, data.length, true); h.setUint32(22, data.length, true); h.setUint16(26, name.length, true); h.setUint16(28, 0, true);
+    parts.push(new Uint8Array(h.buffer), name, data);
+    const c = new DataView(new ArrayBuffer(46));
+    c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint16(10, 0, true);
+    c.setUint16(12, time, true); c.setUint16(14, date, true); c.setUint32(16, crc, true);
+    c.setUint32(20, data.length, true); c.setUint32(24, data.length, true); c.setUint16(28, name.length, true);
+    c.setUint16(30, 0, true); c.setUint16(32, 0, true); c.setUint16(34, 0, true); c.setUint16(36, 0, true); c.setUint32(38, 0, true); c.setUint32(42, offset, true);
+    central.push(new Uint8Array(c.buffer), name);
+    offset += 30 + name.length + data.length;
+  }
+  const cdSize = central.reduce((a, b) => a + b.length, 0);
+  const e = new DataView(new ArrayBuffer(22));
+  e.setUint32(0, 0x06054b50, true); e.setUint16(4, 0, true); e.setUint16(6, 0, true);
+  e.setUint16(8, files.length, true); e.setUint16(10, files.length, true); e.setUint32(12, cdSize, true); e.setUint32(16, offset, true); e.setUint16(20, 0, true);
+  const all = [...parts, ...central, new Uint8Array(e.buffer)];
+  const out = new Uint8Array(all.reduce((a, b) => a + b.length, 0));
+  let p = 0; for (const a of all) { out.set(a, p); p += a.length; }
+  return out;
+}
+const xmlEsc = (v) => String(v == null ? '' : v).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const excelDate = (s) => { const [y, m, d] = s.split('-').map(Number); return (Date.UTC(y, m - 1, d) - Date.UTC(1899, 11, 30)) / 864e5; };
+const hours2 = (min) => Math.round((min / 60) * 100) / 100;
+function xlsxFor(list) {
+  const rows = list.slice().sort((a, b) => byDate(a, b) || clientName(a.clientId).localeCompare(clientName(b.clientId)));
+  const S = (ref, v, st) => `<c r="${ref}" t="inlineStr"${st ? ` s="${st}"` : ''}><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;
+  const N = (ref, v, st) => `<c r="${ref}" s="${st}"><v>${v}</v></c>`;
+  const head = ['Date', 'Client', 'Hours', 'Duration', 'Task performed', 'Follow-up', 'Follow-up status'];
+  let x = `<row r="1">${head.map((h, i) => S(String.fromCharCode(65 + i) + 1, h, 1)).join('')}</row>`;
+  rows.forEach((e, i) => {
+    const r = i + 2;
+    x += `<row r="${r}">${N('A' + r, excelDate(e.date), 2)}${S('B' + r, clientName(e.clientId), 4)}${N('C' + r, hours2(e.minutes), 3)}${S('D' + r, fmtDur(e.minutes), 6)}${S('E' + r, e.desc, 4)}${S('F' + r, e.followUp || '', 4)}${S('G' + r, e.followUp ? (e.followDone ? 'Done' : 'Open') : '', 6)}</row>`;
+  });
+  const last = rows.length + 1, tr = rows.length + 2;
+  const totalMin = rows.reduce((a, e) => a + e.minutes, 0);
+  const totalH = Math.round(rows.reduce((a, e) => a + hours2(e.minutes), 0) * 100) / 100;
+  if (rows.length) x += `<row r="${tr}">${S('A' + tr, 'Total', 1)}${S('B' + tr, plural(rows.length, 'entry', 'entries'), 1)}<c r="C${tr}" s="5"><f>SUM(C2:C${last})</f><v>${totalH}</v></c>${S('D' + tr, fmtDur(totalMin), 1)}${S('E' + tr, '', 1)}${S('F' + tr, '', 1)}${S('G' + tr, '', 1)}</row>`;
+  const widths = [12, 34, 9, 11, 60, 34, 14];
+  const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols><sheetData>${x}</sheetData>${rows.length ? `<autoFilter ref="A1:G${last}"/>` : ''}</worksheet>`;
+  const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="dd/mm/yyyy"/></numFmts><fonts count="2"><font><sz val="11"/><name val="Calibri"/><family val="2"/></font><font><b/><sz val="11"/><name val="Calibri"/><family val="2"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE1EEE8"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="7"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="top"/></xf><xf numFmtId="2" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="2" fontId="1" fillId="2" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+  const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Timesheet" sheetId="1" r:id="rId1"/></sheets>${rows.length ? `<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">Timesheet!$A$1:$G$${last}</definedName></definedNames>` : ''}</workbook>`;
+  return zipStore([
+    { name: '[Content_Types].xml', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>' },
+    { name: '_rels/.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
+    { name: 'xl/workbook.xml', data: workbook },
+    { name: 'xl/_rels/workbook.xml.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>' },
+    { name: 'xl/worksheets/sheet1.xml', data: sheet },
+    { name: 'xl/styles.xml', data: styles },
+  ]);
+}
+const canShareFiles = (() => { try { return !!(navigator.canShare && navigator.share && navigator.canShare({ files: [new File(['x'], 'x.xlsx', { type: XLSX_MIME })] })); } catch (e) { return false; } })();
+const shareLinkHtml = (action) => (canShareFiles ? `<button type="button" class="link share-link" data-action="${action}" data-share="1">Or share the Excel file (WhatsApp, email…)</button>` : '');
+function exportEntries(list, base, share) {
+  if (!list.length) { toast('No entries to export for those dates.'); return; }
+  offerFile(base + '.xlsx', xlsxFor(list), XLSX_MIME, share);
 }
 async function copyText(text, done) {
   try { await navigator.clipboard.writeText(text); toast(done || 'Copied'); }
@@ -1365,9 +1501,9 @@ document.addEventListener('click', (ev) => {
     case 'open-client': if (!ui.detail) navPush('detail'); ui.detail = { clientId: t.dataset.client, mode: 'all', anchor: todayStr(), from: 'clients' }; render(); $('#view').scrollTop = 0; break;
     case 'close-detail': navPopSilently('detail'); ui.detail = null; render(); break;
     case 'copy-summary': { const r = range(ui.sumMode, ui.sumAnchor); copyText(summaryText(ui.sumMode, r, entriesIn(r.from, r.to)), 'Summary copied'); break; }
-    case 'export-period': { const r = range(ui.sumMode, ui.sumAnchor); offerFile(`timesheet_${r.from}_to_${r.to}.csv`, csvFor(entriesIn(r.from, r.to)), 'text/csv', true); break; }
+    case 'export-period': { const r = range(ui.sumMode, ui.sumAnchor); exportEntries(entriesIn(r.from, r.to), `timesheet_${r.from}_to_${r.to}`, t.dataset.share === '1'); break; }
     case 'copy-detail': { const d = ui.detail; const r = range(d.mode, d.anchor); copyText(detailText(d.clientId, d.mode, r, entriesIn(r.from, r.to, d.clientId)), 'Copied'); break; }
-    case 'export-detail': { const d = ui.detail; const r = range(d.mode, d.anchor); const list = entriesIn(r.from, r.to, d.clientId); offerFile(`timesheet_${slug(clientName(d.clientId))}_${d.mode === 'all' ? 'all' : r.from + '_to_' + r.to}.csv`, csvFor(list), 'text/csv', true); break; }
+    case 'export-detail': { const d = ui.detail; const r = range(d.mode, d.anchor); const list = entriesIn(r.from, r.to, d.clientId); exportEntries(list, `timesheet_${slug(clientName(d.clientId))}_${d.mode === 'all' ? 'all' : r.from + '_to_' + r.to}`, t.dataset.share === '1'); break; }
     case 'log-for-client': { draft.client = clientName(ui.detail.clientId); navPopSilently('detail'); ui.detail = null; ui.tab = 'log'; saveUi(); render(); $('#view').scrollTop = 0; break; }
     case 'rename-client': {
       const c = state.clients[ui.detail.clientId]; if (!c) break;
@@ -1413,6 +1549,14 @@ document.addEventListener('click', (ev) => {
     }
     case 'import-clients': importSheet('clients'); break;
     case 'import-tasks': importSheet('tasks'); break;
+    case 'sum-view': ui.sumView = t.dataset.view; saveUi(); renderSummary(); break;
+    case 'delete-client': {
+      const c = state.clients[ui.detail.clientId]; if (!c) break;
+      state.clients[c.id] = Object.assign({}, c, { deleted: true, updatedAt: now() }); commit();
+      navPopSilently('detail'); ui.detail = null; render();
+      toast(`Deleted ${c.name}`, { label: 'Undo', run: () => { state.clients[c.id] = Object.assign({}, c, { updatedAt: now() }); commit(); render({ keepForm: true }); } });
+      break;
+    }
     case 'manage-tasks': tasksSheet(); break;
     case 'add-task':
       nameSheet('Add a task', '', (name) => {
@@ -1460,11 +1604,9 @@ document.addEventListener('click', (ev) => {
     }
     case 'restore-backup': $('#restoreFile').value = ''; $('#restoreFile').click(); break;
     case 'export-range': {
-      const list = entriesIn(ui.expFrom, ui.expTo);
-      if (!list.length) { toast('No entries between those dates.'); break; }
-      offerFile(`timesheet_${ui.expFrom}_to_${ui.expTo}.csv`, csvFor(list), 'text/csv', true); break;
+      exportEntries(entriesIn(ui.expFrom, ui.expTo), `timesheet_${ui.expFrom}_to_${ui.expTo}`, t.dataset.share === '1'); break;
     }
-    case 'export-all': offerFile(`timesheet_all_${todayStr()}.csv`, csvFor(liveEntries()), 'text/csv', true); break;
+    case 'export-all': exportEntries(liveEntries(), `timesheet_all_${todayStr()}`, t.dataset.share === '1'); break;
     case 'install':
       if (installPrompt) { const p = installPrompt; installPrompt = null; p.prompt(); Promise.resolve(p.userChoice).catch(() => {}).then(() => { if (ui.tab === 'settings' && !ui.detail) renderSettings(); }); }
       break;
@@ -1524,11 +1666,12 @@ document.addEventListener('change', (ev) => {
   else if (id === 'importFile') {
     const f = ev.target.files && ev.target.files[0]; if (!f) return;
     f.text().then((txt) => {
-      importState = { text: txt, isCsv: /\.csv$/i.test(f.name) || /csv/.test(f.type) };
+      importState.text = txt; importState.isCsv = /\.csv$/i.test(f.name) || /csv/.test(f.type);
       const ta = $('#importText'); if (ta) ta.value = txt.length > 200000 ? txt.slice(0, 200000) : txt;
       renderImportPreview();
     }).catch(() => toast("Couldn't read that file."));
   }
+  else if (id === 'importRemoveClients') { importState.removeClash = ev.target.checked; renderImportPreview(); }
   else if (id === 'restoreFile') {
     const f = ev.target.files && ev.target.files[0]; if (!f) return;
     f.text().then((txt) => restoreFrom(txt)).catch(() => toast("Couldn't read that file."));
