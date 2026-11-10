@@ -431,7 +431,7 @@ function loadLocal() {
     const u = JSON.parse(localStorage.getItem(UI_KEY) || 'null');
     if (u && ['log', 'summary', 'clients', 'settings'].includes(u.tab)) ui.tab = u.tab;
     if (u && ['day', 'week', 'month', 'custom'].includes(u.sumMode)) ui.sumMode = u.sumMode;
-    if (u && ['table', 'clients'].includes(u.sumView)) ui.sumView = u.sumView;
+    if (u && ['table', 'clients', 'tasks'].includes(u.sumView)) ui.sumView = u.sumView;
     if (u) for (const k of ['customFrom', 'customTo', 'expFrom', 'expTo']) if (isDateStr(u[k])) ui[k] = u[k];
   } catch (e) { storageOk = false; }
 }
@@ -646,26 +646,51 @@ function doImport() {
 
 /* ---- task list: pick standard tasks instead of typing them */
 function searchTasks(q) {
-  const ws = nameWords(q);
   const all = liveTasks().sort((a, b) => a.name.localeCompare(b.name));
+  const ws = nameWords(q);
   if (!ws.length) return all;
-  return all.filter((t) => { const f = fold(t.name); return ws.every((w) => f.includes(w)); });
+  const k = fold(q).trim();
+  const hits = [];
+  for (const t of all) {
+    const f = fold(t.name);
+    if (!ws.every((w) => f.includes(w))) continue;
+    const score = f.startsWith(k) ? 3 : nameWords(t.name).some((w) => w.startsWith(ws[0])) ? 2 : 1;
+    hits.push({ t, score });
+  }
+  return hits.sort((a, b) => b.score - a.score || a.t.name.localeCompare(b.t.name)).map((h) => h.t);
 }
 function taskPickerHtml(target) {
   const n = liveTasks().length;
-  if (!n) return target === 'f-desc' ? '<button type="button" class="link" data-action="import-tasks" style="align-self:flex-start">Import your task list to pick from</button>' : '';
-  return `<div class="task-pick"><input class="input" type="search" id="${target}-tq" enterkeyhint="search" autocomplete="off" placeholder="Search your ${plural(n, 'task', 'tasks')}" aria-label="Search your task list"><button type="button" class="btn btn-secondary btn-sm" data-action="task-browse" data-target="${target}" aria-label="Show all tasks">All ▾</button></div>
-    <div class="ac-list task-list" id="${target}-tl" role="listbox" aria-label="Task list" hidden></div>`;
+  return `<p class="ac-status" id="${target}-status" hidden>✓ From your task list</p>
+    <div class="ac-list task-list" id="${target}-tl" role="listbox" aria-label="Matching tasks" hidden></div>
+    ${n ? `<button type="button" class="link" data-action="task-browse" data-target="${target}" style="align-self:flex-start">Browse all ${plural(n, 'task', 'tasks')} ▾</button>`
+      : target === 'f-desc' ? '<button type="button" class="link" data-action="import-tasks" style="align-self:flex-start">Import your task list to pick from</button>' : ''}`;
 }
-function renderTaskList(target, showAll) {
-  const box = $('#' + target + '-tl'), qi = $('#' + target + '-tq'); if (!box) return;
-  const q = qi ? qi.value.trim() : '';
-  if (!q && !showAll) { box.hidden = true; box.innerHTML = ''; return; }
-  const list = searchTasks(q);
-  box.innerHTML = list.length
-    ? list.slice(0, 400).map((t) => `<button type="button" class="ac-item task-item" data-action="task-pick" data-target="${target}" data-id="${esc(t.id)}"><span>${highlight(t.name, q)}</span></button>`).join('')
-    : `<p class="ac-empty">No tasks match “${esc(q)}”. You can still type the task below.</p>`;
-  box.hidden = false;
+/* Suggestions under the Task performed box: live matches while typing, the whole list when browsing,
+   and an option to add what was typed to the task list. */
+function renderTaskList(target, browse) {
+  const box = $('#' + target + '-tl'), ta = $('#' + target), status = $('#' + target + '-status');
+  if (!box || !ta) return;
+  if (browse === true) box.dataset.browse = '1';
+  if (browse === false) delete box.dataset.browse;
+  const browsing = !!box.dataset.browse;
+  const link = $(`[data-action="task-browse"][data-target="${target}"]`);
+  if (link) link.textContent = browsing ? 'Hide task list ▴' : `Browse all ${plural(liveTasks().length, 'task', 'tasks')} ▾`;
+  const q = ta.value.trim().replace(/\s+/g, ' ');
+  const exact = q ? liveTasks().find((x) => normName(x.name) === normName(q)) : null;
+  if (status) status.hidden = !exact;
+  const typing = document.activeElement === ta && !!q && !exact;
+  if (!browsing && !typing) { box.hidden = true; box.innerHTML = ''; return; }
+  const filterBy = typing ? q : '';
+  const found = searchTasks(filterBy);
+  const shown = found.slice(0, browsing ? 400 : 8);
+  let html = shown.map((x) => `<button type="button" class="ac-item task-item" data-action="task-pick" data-target="${target}" data-id="${esc(x.id)}"><span>${highlight(x.name, filterBy)}</span></button>`).join('');
+  if (found.length > shown.length) html += `<p class="ac-empty">${found.length - shown.length} more match. Keep typing to narrow it down.</p>`;
+  if (typing) html += `<button type="button" class="ac-item is-new" data-action="task-add-typed" data-target="${target}">+ Add “${esc(q.length > 90 ? q.slice(0, 90) + '…' : q)}” to your task list</button>`;
+  if (!html) html = '<p class="ac-empty">Your task list is empty. Type a task, or import a list in Settings.</p>';
+  const wasHidden = box.hidden;
+  box.innerHTML = html; box.hidden = false;
+  if (wasHidden && typing) setTimeout(() => { try { box.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) { /* older browsers */ } }, 50);
 }
 function tasksSheet() {
   openSheet(`${sheetHead('Task list')}
@@ -820,7 +845,7 @@ function renderSyncPill() {
 
 function render(opts) {
   opts = opts || {};
-  $('#title').textContent = ui.detail ? (ui.detail.mode === 'all' ? 'Client history' : 'Client detail') : TITLES[ui.tab];
+  $('#title').textContent = ui.detail ? ('taskKey' in ui.detail ? 'Task detail' : ui.detail.mode === 'all' ? 'Client history' : 'Client detail') : TITLES[ui.tab];
   $$('.tab').forEach((b) => { if (b.dataset.tab === ui.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
   renderSyncPill();
   $('#clientNames').innerHTML = liveClients().filter((c) => !c.archived).sort((a, b) => a.name.localeCompare(b.name)).map((c) => `<option value="${esc(c.name)}"></option>`).join('');
@@ -885,8 +910,8 @@ function renderLog() {
       </div>
       <div class="field">
         <label class="label" for="f-desc">Task performed</label>
+        <textarea class="input" id="f-desc" rows="3" autocomplete="off" aria-controls="f-desc-tl" placeholder="${liveTasks().length ? 'Start typing to find a task, e.g. Inv…' : 'e.g. Prepared VAT201 return for September'}">${esc(draft.desc)}</textarea>
         ${taskPickerHtml('f-desc')}
-        <textarea class="input" id="f-desc" rows="3" placeholder="${liveTasks().length ? 'Pick from your task list, or type the task' : 'e.g. Prepared VAT201 return for September'}">${esc(draft.desc)}</textarea>
       </div>
       <div class="field">
         <label class="label" for="f-follow">Follow-up action <span class="opt">(optional)</span></label>
@@ -897,7 +922,7 @@ function renderLog() {
       <button class="btn btn-primary btn-block" type="submit">Save entry</button>
     </form>
     <section id="dayList" class="stack"></section>`;
-  renderTimer(); renderClientChips(); renderDayList(); updateDec(); renderAc('f-client'); renderFollowChips('f-follow');
+  renderTimer(); renderClientChips(); renderDayList(); updateDec(); renderAc('f-client'); renderFollowChips('f-follow'); renderTaskList('f-desc');
 }
 function renderTimer() {
   const el = $('#timerCard'); if (!el) return;
@@ -990,12 +1015,44 @@ function renderSummary() {
       ${mode !== 'day' && days > 1 && days <= 62 ? barsHtml(mode, r, list) : ''}
     </section>
     ${fuOpen ? `<button type="button" class="fu-banner" data-action="fu-open-list"><span>↻ ${plural(fuOpen, 'open follow-up', 'open follow-ups')}</span><span>View ›</span></button>` : ''}
-    ${s.groups.length ? `<div class="seg" style="--n:2" aria-label="Show entries as">${[['table', 'Table'], ['clients', 'By client']].map(([v, l]) => `<button type="button" aria-pressed="${ui.sumView === v}" data-action="sum-view" data-view="${v}">${l}</button>`).join('')}</div>
-      ${ui.sumView === 'clients' ? `<div class="stack">${groups}</div>` : tableHtml(list)}
+    ${s.groups.length ? `<div class="seg" style="--n:3" aria-label="Show entries as">${[['table', 'Table'], ['clients', 'By client'], ['tasks', 'By task']].map(([v, l]) => `<button type="button" aria-pressed="${ui.sumView === v}" data-action="sum-view" data-view="${v}">${l}</button>`).join('')}</div>
+      ${ui.sumView === 'clients' ? `<div class="stack">${groups}</div>` : ui.sumView === 'tasks' ? `<div class="stack">${taskCardsHtml(list, s.total)}</div>` : tableHtml(list)}
       <div class="btn-row"><button type="button" class="btn btn-secondary" data-action="copy-summary">Copy summary</button><button type="button" class="btn btn-primary" data-action="export-period">Download Excel</button></div>${shareLinkHtml('export-period')}`
       : `<div class="card empty"><p><strong>No time logged ${emptyWhen}.</strong></p><p>Entries you save on the Log tab show up here, grouped by client.</p>${noneAtAll ? '<button class="btn btn-secondary btn-sm" type="button" data-action="load-samples">Try it with sample entries</button>' : ''}</div>`}`;
 }
 const fmtNumDate = (d) => fmt(d, { day: '2-digit', month: '2-digit', year: 'numeric' });
+/* Entries count as the same task when the text matches, ignoring capitals and extra spaces. */
+const taskKeyOf = (e) => normName(e.desc);
+function summarizeByTask(list) {
+  const lib = new Map(liveTasks().map((t) => [normName(t.name), t.name]));
+  const by = new Map();
+  for (const e of list) {
+    const k = taskKeyOf(e);
+    let g = by.get(k);
+    if (!g) { g = { key: k, name: lib.get(k) || e.desc.trim() || 'No description', minutes: 0, entries: [] }; by.set(k, g); }
+    g.minutes += e.minutes; g.entries.push(e);
+  }
+  const groups = [...by.values()].sort((a, b) => b.minutes - a.minutes || a.name.localeCompare(b.name));
+  groups.forEach((g) => g.entries.sort(byDate));
+  return groups;
+}
+function taskCardsHtml(list, total) {
+  return summarizeByTask(list).map((g) => {
+    const per = new Map();
+    for (const e of g.entries) per.set(e.clientId, (per.get(e.clientId) || 0) + e.minutes);
+    const cl = [...per.entries()].sort((a, b) => b[1] - a[1]);
+    const more = cl.length - 2;
+    const share = total ? Math.round((g.minutes / total) * 100) : 0;
+    const fu = g.entries.filter((e) => e.followUp && !e.followDone).length;
+    return `<button type="button" class="crow" data-action="open-task" data-task="${esc(g.key)}" data-name="${esc(g.name)}">
+      <span class="crow-top"><span class="crow-name">${esc(g.name)}</span><span class="crow-time num">${fmtDur(g.minutes)}</span></span>
+      <span class="crow-bar" aria-hidden="true"><span style="width:${Math.max(2, share)}%"></span></span>
+      <span class="crow-tasks">${cl.slice(0, 2).map(([id, m]) => `<span class="crow-task">${esc(clientName(id))} · ${fmtDur(m)}</span>`).join('')}${more > 0 ? `<span class="crow-more">+${plural(more, 'more client', 'more clients')}</span>` : ''}</span>
+      ${fu ? `<span class="fu">↻ ${plural(fu, 'open follow-up', 'open follow-ups')}</span>` : ''}
+      <span class="crow-meta"><span class="num">${fmtDec(g.minutes)} h · ${plural(g.entries.length, 'entry', 'entries')} · ${plural(cl.length, 'client', 'clients')} · ${share}%</span><span class="crow-go">Detail ›</span></span>
+    </button>`;
+  }).join('');
+}
 function tableHtml(list) {
   const rows = list.slice().sort((a, b) => byDate(a, b) || clientName(a.clientId).localeCompare(clientName(b.clientId)));
   const total = rows.reduce((a, e) => a + e.minutes, 0);
@@ -1022,8 +1079,42 @@ function barsHtml(mode, r, list) {
 }
 
 /* ---- Client detail */
+function detailList(d) {
+  const r = range(d.mode, d.anchor);
+  const isTask = 'taskKey' in d;
+  let list = entriesIn(r.from, r.to, isTask ? undefined : d.clientId);
+  if (isTask) list = list.filter((e) => taskKeyOf(e) === d.taskKey);
+  return { r, list: list.sort(byDate) };
+}
+function renderTaskDetail() {
+  const d = ui.detail;
+  const { r, list } = detailList(d);
+  const total = list.reduce((a, e) => a + e.minutes, 0);
+  const nClients = new Set(list.map((e) => e.clientId)).size;
+  const groups = new Map();
+  for (const e of list) { if (!groups.has(e.date)) groups.set(e.date, []); groups.get(e.date).push(e); }
+  const body = list.length
+    ? `<div class="card list">${[...groups.entries()].map(([date, es]) => `<div class="date-h"><span>${esc(fmtDayShort(date))}</span><span class="num">${es.length > 1 ? fmtDur(es.reduce((a, e) => a + e.minutes, 0)) + ' total' : ''}</span></div>${es.map((e) => `<button type="button" class="entry" data-action="edit-entry" data-id="${esc(e.id)}" style="border-top:0;padding-top:6px"><span class="e-main"><span class="e-client">${esc(clientName(e.clientId))}</span>${fuHtml(e)}</span><span class="e-time num">${fmtDur(e.minutes)}</span></button>`).join('')}`).join('')}</div>`
+    : '<div class="card empty"><p>No entries for this task in this period.</p></div>';
+  $('#view').innerHTML = `
+    <button type="button" class="back" data-action="close-detail">${ICON_L}Summary</button>
+    <header>
+      <h2 class="detail-name">${esc(d.taskName || 'No description')}</h2>
+      <p class="detail-sub">${esc(periodLabel(d.mode, r))}</p>
+    </header>
+    <section class="card">
+      <div class="total-fig">${fmtDur(total)}</div>
+      <div class="total-sub num">${fmtDec(total)} h · ${plural(list.length, 'entry', 'entries')} · ${plural(nClients, 'client', 'clients')}</div>
+    </section>
+    ${body}
+    <div class="btn-col">
+      <button type="button" class="btn btn-primary" data-action="log-for-task">Log time for this task</button>
+      ${list.length ? `<div class="btn-row"><button type="button" class="btn btn-secondary" data-action="copy-detail">Copy as text</button><button type="button" class="btn btn-secondary" data-action="export-detail">Download Excel</button></div>${shareLinkHtml('export-detail')}` : ''}
+    </div>`;
+}
 function renderDetail() {
   const d = ui.detail;
+  if ('taskKey' in d) return renderTaskDetail();
   const c = state.clients[d.clientId];
   const r = range(d.mode, d.anchor);
   const all = d.mode === 'all';
@@ -1207,12 +1298,12 @@ function editSheet(entry) {
       <div class="field"><label class="label" for="e-date">Date</label><input class="input" type="date" id="e-date" value="${esc(e.date)}"></div>
       <div class="field"><label class="label" for="e-client">Client</label><input class="input" id="e-client" type="search" enterkeyhint="done" autocomplete="off" autocorrect="off" spellcheck="false" autocapitalize="words" value="${esc(e.clientId ? clientName(e.clientId) : '')}" aria-controls="e-client-ac"><p class="ac-status" id="e-client-status" hidden></p><div class="ac-list" id="e-client-ac" role="listbox" aria-label="Matching clients" hidden></div></div>
       <div class="field"><span class="label" id="e-durLabel">Time spent</span><div class="dur" role="group" aria-labelledby="e-durLabel"><input class="input" id="e-h" inputmode="decimal" aria-label="Hours" value="${e.minutes ? h : ''}" placeholder="0"><span class="unit">h</span><input class="input" id="e-m" inputmode="numeric" pattern="[0-9]*" aria-label="Minutes" value="${e.minutes ? m : ''}" placeholder="0"><span class="unit">min</span></div></div>
-      <div class="field"><label class="label" for="e-desc">Task performed</label>${taskPickerHtml('e-desc')}<textarea class="input" id="e-desc" rows="3">${esc(e.desc)}</textarea></div>
+      <div class="field"><label class="label" for="e-desc">Task performed</label><textarea class="input" id="e-desc" rows="3" autocomplete="off" aria-controls="e-desc-tl">${esc(e.desc)}</textarea>${taskPickerHtml('e-desc')}</div>
       <div class="field"><label class="label" for="e-follow">Follow-up action <span class="opt">(optional)</span></label><input class="input" id="e-follow" autocomplete="off" placeholder="e.g. Waiting for bank statements" value="${esc(e.followUp || '')}"><div class="chips chips-scroll" id="e-follow-chips" aria-label="Common follow-ups"></div><label class="check-row"><input type="checkbox" id="e-fudone" ${e.followDone ? 'checked' : ''}> Follow-up done</label></div>
       <p class="form-error" id="editError" role="alert" hidden></p>
       <div class="btn-row">${isNew ? '<button type="button" class="btn btn-secondary" data-action="close-sheet">Cancel</button>' : `<button type="button" class="btn btn-danger-text" data-action="delete-entry" data-id="${esc(entry.id)}">Delete</button>`}<button type="submit" class="btn btn-primary">Save</button></div>
     </form>`, { entryId: entry ? entry.id : null });
-  renderFollowChips('e-follow');
+  renderFollowChips('e-follow'); renderTaskList('e-desc');
 }
 function nameSheet(title, value, onSave, opts) {
   opts = opts || {};
@@ -1346,22 +1437,30 @@ async function copyText(text, done) {
   catch (e) { textSheet('Copy text', text); }
 }
 const fuText = (e) => (e.followUp ? ` · Follow-up: ${e.followUp}${e.followDone ? ' (done)' : ''}` : '');
-function summaryText(mode, r, list) {
+function summaryText(mode, r, list, byTask) {
   const s = summarize(list);
   let out = `Timesheet · ${periodLabel(mode, r)}\nTotal ${fmtDur(s.total)} (${fmtDec(s.total)} h) · ${plural(s.count, 'entry', 'entries')}\n`;
+  if (byTask) {
+    for (const g of summarizeByTask(list)) {
+      out += `\n${g.name} · ${fmtDur(g.minutes)} (${fmtDec(g.minutes)} h)\n`;
+      for (const e of g.entries) out += `  ${fmtDayShort(e.date)} · ${fmtDur(e.minutes)} · ${clientName(e.clientId)}${fuText(e)}\n`;
+    }
+    return out;
+  }
   for (const g of s.groups) {
     out += `\n${clientName(g.clientId)} · ${fmtDur(g.minutes)} (${fmtDec(g.minutes)} h)\n`;
     for (const e of g.entries) out += `  ${fmtDayShort(e.date)} · ${fmtDur(e.minutes)} · ${e.desc}${fuText(e)}\n`;
   }
   return out;
 }
-function detailText(clientId, mode, r, list) {
+function detailText(d, r, list) {
+  const isTask = 'taskKey' in d;
   const total = list.reduce((a, e) => a + e.minutes, 0);
-  let out = `${clientName(clientId)} · ${periodLabel(mode, r)}\nTotal ${fmtDur(total)} (${fmtDec(total)} h)\n`;
+  let out = `${isTask ? d.taskName : clientName(d.clientId)} · ${periodLabel(d.mode, r)}\nTotal ${fmtDur(total)} (${fmtDec(total)} h)\n`;
   let last = '';
   for (const e of list.slice().sort(byDate)) {
     if (e.date !== last) { out += `\n${fmtDayShort(e.date)}\n`; last = e.date; }
-    out += `  ${fmtDur(e.minutes)} · ${e.desc}${fuText(e)}\n`;
+    out += `  ${fmtDur(e.minutes)} · ${isTask ? clientName(e.clientId) : e.desc}${fuText(e)}\n`;
   }
   return out;
 }
@@ -1500,10 +1599,12 @@ document.addEventListener('click', (ev) => {
     case 'open-detail': if (!ui.detail) navPush('detail'); ui.detail = { clientId: t.dataset.client, mode: ui.sumMode, anchor: ui.sumMode === 'custom' ? ui.customFrom + '|' + ui.customTo : ui.sumAnchor, from: 'summary' }; render(); $('#view').scrollTop = 0; break;
     case 'open-client': if (!ui.detail) navPush('detail'); ui.detail = { clientId: t.dataset.client, mode: 'all', anchor: todayStr(), from: 'clients' }; render(); $('#view').scrollTop = 0; break;
     case 'close-detail': navPopSilently('detail'); ui.detail = null; render(); break;
-    case 'copy-summary': { const r = range(ui.sumMode, ui.sumAnchor); copyText(summaryText(ui.sumMode, r, entriesIn(r.from, r.to)), 'Summary copied'); break; }
+    case 'copy-summary': { const r = range(ui.sumMode, ui.sumAnchor); copyText(summaryText(ui.sumMode, r, entriesIn(r.from, r.to), ui.sumView === 'tasks'), 'Summary copied'); break; }
     case 'export-period': { const r = range(ui.sumMode, ui.sumAnchor); exportEntries(entriesIn(r.from, r.to), `timesheet_${r.from}_to_${r.to}`, t.dataset.share === '1'); break; }
-    case 'copy-detail': { const d = ui.detail; const r = range(d.mode, d.anchor); copyText(detailText(d.clientId, d.mode, r, entriesIn(r.from, r.to, d.clientId)), 'Copied'); break; }
-    case 'export-detail': { const d = ui.detail; const r = range(d.mode, d.anchor); const list = entriesIn(r.from, r.to, d.clientId); exportEntries(list, `timesheet_${slug(clientName(d.clientId))}_${d.mode === 'all' ? 'all' : r.from + '_to_' + r.to}`, t.dataset.share === '1'); break; }
+    case 'copy-detail': { const d = ui.detail; const { r, list } = detailList(d); copyText(detailText(d, r, list), 'Copied'); break; }
+    case 'export-detail': { const d = ui.detail; const { r, list } = detailList(d); exportEntries(list, `timesheet_${slug('taskKey' in d ? d.taskName : clientName(d.clientId))}_${d.mode === 'all' ? 'all' : r.from + '_to_' + r.to}`, t.dataset.share === '1'); break; }
+    case 'open-task': if (!ui.detail) navPush('detail'); ui.detail = { taskKey: t.dataset.task, taskName: t.dataset.name, mode: ui.sumMode, anchor: ui.sumMode === 'custom' ? ui.customFrom + '|' + ui.customTo : ui.sumAnchor, from: 'summary' }; render(); $('#view').scrollTop = 0; break;
+    case 'log-for-task': { draft.desc = ui.detail.taskName || ''; navPopSilently('detail'); ui.detail = null; ui.tab = 'log'; saveUi(); render(); $('#view').scrollTop = 0; break; }
     case 'log-for-client': { draft.client = clientName(ui.detail.clientId); navPopSilently('detail'); ui.detail = null; ui.tab = 'log'; saveUi(); render(); $('#view').scrollTop = 0; break; }
     case 'rename-client': {
       const c = state.clients[ui.detail.clientId]; if (!c) break;
@@ -1566,13 +1667,22 @@ document.addEventListener('click', (ev) => {
       }, { label: 'Task', after: tasksSheet });
       break;
     case 'task-remove': { const tk = state.tasks[t.dataset.id]; if (!tk) break; delete state.tasks[tk.id]; commit(); renderTaskManage(); if (ui.tab === 'settings' && !ui.detail) renderSettings(); toast('Task removed', { label: 'Undo', run: () => { state.tasks[tk.id] = tk; commit(); renderTaskManage(); if (ui.tab === 'settings' && !ui.detail) renderSettings(); } }); break; }
-    case 'task-browse': { const box = $('#' + t.dataset.target + '-tl'); if (box && !box.hidden) { box.hidden = true; box.innerHTML = ''; } else renderTaskList(t.dataset.target, true); break; }
+    case 'task-browse': { const box = $('#' + t.dataset.target + '-tl'); renderTaskList(t.dataset.target, !(box && box.dataset.browse)); break; }
+    case 'task-add-typed': {
+      const ta = $('#' + t.dataset.target); if (!ta) break;
+      const name = ta.value.trim().replace(/\s+/g, ' ').slice(0, 300); if (!name) break;
+      if (!liveTasks().some((x) => normName(x.name) === normName(name))) { const tk = { id: newId(), name, updatedAt: now() }; state.tasks[tk.id] = tk; commit(); }
+      ta.value = name; if (t.dataset.target === 'f-desc') draft.desc = name;
+      if (document.activeElement) document.activeElement.blur();
+      renderTaskList(t.dataset.target, false);
+      toast('Added to your task list');
+      break;
+    }
     case 'task-pick': {
       const tk = state.tasks[t.dataset.id], ta = $('#' + t.dataset.target); if (!tk || !ta) break;
       ta.value = tk.name; if (t.dataset.target === 'f-desc') draft.desc = tk.name;
-      const q = $('#' + t.dataset.target + '-tq'); if (q) q.value = '';
-      renderTaskList(t.dataset.target, false);
       if (document.activeElement) document.activeElement.blur();
+      renderTaskList(t.dataset.target, false);
       const err = $(t.dataset.target === 'f-desc' ? '#formError' : '#editError'); if (err) err.hidden = true;
       break;
     }
@@ -1642,12 +1752,13 @@ document.addEventListener('input', (ev) => {
     if (id === 'f-h' || id === 'f-m') updateDec();
     if (id === 'f-client') { renderClientChips(); renderAc('f-client'); }
     if (id === 'f-follow') renderFollowChips('f-follow');
+    if (id === 'f-desc') renderTaskList('f-desc');
     if (id === 'f-date' && isDateStr(ev.target.value)) renderDayList();
     const err = $('#formError'); if (err && !err.hidden) err.hidden = true;
   } else if (id === 'clientFilter') { ui.clientFilter = ev.target.value; renderClientList(); }
   else if (id === 'e-client') { renderAc('e-client'); const err = $('#editError'); if (err) err.hidden = true; }
   else if (id === 'importText') { importState.text = ev.target.value; renderImportPreview(); }
-  else if (id.endsWith('-tq')) renderTaskList(id.slice(0, -3), false);
+  else if (id === 'e-desc') renderTaskList('e-desc');
   else if (id === 'taskFilter') renderTaskManage();
   else if (id === 'e-follow') renderFollowChips('e-follow');
 });
@@ -1704,7 +1815,15 @@ function restoreFrom(txt) {
 }
 
 document.addEventListener('pointerdown', (ev) => { if (ev.target.closest('.ac-item')) ev.preventDefault(); });
-document.addEventListener('focusin', (ev) => { if (ev.target.id === 'f-client' || ev.target.id === 'e-client') renderAc(ev.target.id); });
+document.addEventListener('focusin', (ev) => {
+  const id = ev.target.id;
+  if (id === 'f-client' || id === 'e-client') renderAc(id);
+  if (id === 'f-desc' || id === 'e-desc') renderTaskList(id);
+});
+document.addEventListener('focusout', (ev) => {
+  const id = ev.target.id;
+  if (id === 'f-desc' || id === 'e-desc') setTimeout(() => renderTaskList(id), 0);
+});
 document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && !$('#sheetWrap').hidden) closeSheet(); });
 
 /* Timer tick and day rollover */

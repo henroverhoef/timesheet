@@ -1,7 +1,7 @@
 /* Client Timesheet service worker: keeps the app's own files on the phone so it
    opens without internet. It never touches the timesheet entries, which live in
    the browser's local storage on this phone. Bump VERSION when files change. */
-const VERSION = 'timesheet-v5';
+const VERSION = 'timesheet-v6';
 const FILES = [
   './',
   './index.html',
